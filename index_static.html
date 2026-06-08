@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HotpotQA Multi-Hop QA System</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f2f5}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:25px;text-align:center}
+.header h1{font-size:28px;margin-bottom:8px;letter-spacing:1px}
+.header p{opacity:.8;font-size:14px}
+.container{max-width:1400px;margin:20px auto;padding:0 20px}
+.stats{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap}
+.stat-card{background:#fff;padding:18px;border-radius:12px;text-align:center;flex:1;min-width:100px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.stat-card h3{color:#888;font-size:12px;text-transform:uppercase}
+.stat-card .num{font-size:24px;color:#1a1a2e;font-weight:700;margin-top:5px}
+.search-box{width:100%;padding:14px 18px;font-size:15px;border:2px solid #e0e0e0;border-radius:12px;margin-bottom:20px;outline:none;transition:border .3s,box-shadow .3s}
+.search-box:focus{border-color:#4a90d9;box-shadow:0 0 0 3px rgba(74,144,217,.15)}
+.main{display:flex;gap:20px}
+.list-panel{flex:0 0 420px;max-height:550px;overflow-y:auto}
+.graph-panel{flex:1;display:flex;flex-direction:column;gap:20px}
+.question-card{background:#fff;padding:14px 16px;margin-bottom:8px;border-radius:10px;cursor:pointer;border-left:4px solid #4a90d9;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:all .2s}
+.question-card:hover{background:#e8f0fe;border-left-color:#1a73e8;transform:translateX(4px)}
+.question-card.active{background:#dce8fa;border-left-color:#1a73e8}
+.question-card .q{font-size:14px;margin-bottom:6px;line-height:1.4}
+.question-card .meta{font-size:12px;color:#888}
+.question-card .answer{color:#2e7d32;font-weight:600}
+.type-badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;margin-right:6px}
+.type-comparison{background:#e3f2fd;color:#1565c0}
+.type-bridge{background:#fce4ec;color:#c62828}
+.level-easy{background:#e8f5e9;color:#2e7d32}
+.level-medium{background:#fff3e0;color:#e65100}
+.level-hard{background:#fce4ec;color:#b71c1c}
+#graph{background:#fff;border-radius:12px;height:420px;border:1px solid #e8e8e8;overflow:hidden}
+#cluster{background:#fff;border-radius:12px;height:260px;border:1px solid #e8e8e8;overflow:hidden;padding:10px}
+#graph svg,#cluster svg{width:100%;height:100%}
+.link{stroke:#ccc;stroke-width:1.5;fill:none}
+.node circle{stroke:#fff;stroke-width:2}
+.node text{font-size:10px;pointer-events:none}
+.tooltip{position:absolute;background:#333;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;opacity:0;max-width:300px;z-index:100}
+#clusterTitle{font-size:14px;font-weight:600;color:#555;text-align:center;padding:8px}
+.bar{transition:opacity .2s}
+.bar:hover{opacity:.9}
+.axis text{font-size:11px;fill:#888}
+.axis line,.axis path{stroke:#ddd}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#f1f1f1;border-radius:3px}
+::-webkit-scrollbar-thumb{background:#c1c1c1;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>HotpotQA Multi-Hop QA System</h1>
+<p>Neo4j Graph Database | 1,000 Questions | Multi-Hop Reasoning | Clustering</p>
+</div>
+<div class="container">
+<div class="stats" id="stats">Loading...</div>
+<input class="search-box" placeholder="Type a keyword and press Enter to search..." id="searchInput">
+<div class="main">
+<div class="list-panel" id="questionList"><p style="color:#888;text-align:center;padding:40px;">Search to see results</p></div>
+<div class="graph-panel">
+<div id="graph"></div>
+<div id="cluster"><div id="clusterTitle">Question Distribution by Type and Difficulty</div></div>
+</div>
+</div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+var DATA = [];
+fetch("data.json").then(function(r){return r.json()}).then(function(d){
+    DATA = d;
+    loadStats();
+    loadCluster();
+    document.getElementById("stats").innerHTML = "Ready";
+}).catch(function(){
+    document.getElementById("stats").innerHTML = "Error loading data";
+});
+
+function loadStats(){
+    var count = {};
+    DATA.forEach(function(x){
+        count[x.type] = (count[x.type]||0) + 1;
+    });
+    var h = "";
+    for(var t in count){
+        h += '<div class="stat-card"><h3>'+t+'</h3><div class="num">'+count[t]+'</div></div>';
+    }
+    document.getElementById("stats").innerHTML = h;
+}
+
+function loadCluster(){
+    var el = document.getElementById("cluster");
+    var W = el.clientWidth-20;
+    var H = el.clientHeight-40;
+    var margin = {top:30, right:20, bottom:50, left:50};
+    var chartW = W - margin.left - margin.right;
+    var chartH = H - margin.top - margin.bottom;
+    
+    var grouped = {};
+    DATA.forEach(function(x){
+        if(!grouped[x.type]) grouped[x.type] = {easy:0, medium:0, hard:0};
+        grouped[x.type][x.level] = (grouped[x.type][x.level]||0) + 1;
+    });
+    
+    var types = Object.keys(grouped);
+    var levels = ["easy","medium","hard"];
+    var colors = {easy:"#4caf50", medium:"#ff9800", hard:"#f44336"};
+    
+    var svg = d3.select("#cluster").append("svg").attr("width",W).attr("height",H);
+    var g = svg.append("g").attr("transform","translate("+margin.left+","+margin.top+")");
+    var barW = chartW / types.length;
+    
+    var maxV = 0;
+    types.forEach(function(t){
+        var sum = grouped[t].easy + grouped[t].medium + grouped[t].hard;
+        if(sum > maxV) maxV = sum;
+    });
+    var y = d3.scaleLinear().domain([0,maxV]).range([chartH,0]);
+    
+    g.append("g").call(d3.axisLeft(y).ticks(5)).attr("class","axis");
+    g.append("g").attr("transform","translate(0,"+chartH+")")
+        .call(d3.axisBottom(d3.scaleBand().domain(types).range([0,chartW]))).attr("class","axis");
+    
+    types.forEach(function(t,i){
+        var offset = 0;
+        levels.forEach(function(lev){
+            var val = grouped[t][lev];
+            var h = y(0) - y(val);
+            g.append("rect").attr("x",i*barW+barW*0.1).attr("y",y(0)-h-offset)
+                .attr("width",barW*0.8).attr("height",h).attr("fill",colors[lev])
+                .attr("opacity",0.85).attr("class","bar");
+            offset += h;
+        });
+    });
+    
+    var legend = svg.append("g").attr("transform","translate("+(W-160)+",5)");
+    levels.forEach(function(lev,i){
+        legend.append("rect").attr("x",i*50).attr("y",0).attr("width",10).attr("height",10).attr("fill",colors[lev]).attr("rx",2);
+        legend.append("text").text(lev).attr("x",i*50+14).attr("y",9).attr("font-size","10").attr("fill","#888");
+    });
+}
+
+document.getElementById("searchInput").addEventListener("keyup", function(e){
+    if(e.key === "Enter"){
+        var q = this.value.trim().toLowerCase();
+        if(q.length < 2) return;
+        var results = DATA.filter(function(x){
+            return x.question.toLowerCase().indexOf(q) >= 0;
+        }).slice(0, 30);
+        
+        if(results.length === 0){
+            document.getElementById("questionList").innerHTML = '<p style="color:#888;text-align:center;padding:40px;">No results found</p>';
+            return;
+        }
+        var h = "";
+        results.forEach(function(x){
+            h += '<div class="question-card" onclick="showGraph(\''+x.id+'\')">'+
+                '<div class="q">'+x.question+'</div>'+
+                '<div class="meta"><span class="type-badge type-'+x.type+'">'+x.type+'</span>'+
+                '<span class="type-badge level-'+x.level+'">'+x.level+'</span>'+
+                '<span class="answer">Answer: '+x.answer+'</span></div></div>';
+        });
+        document.getElementById("questionList").innerHTML = h;
+    }
+});
+
+function showGraph(qid){
+    var item = DATA.find(function(x){return x.id === qid});
+    if(!item) return;
+    
+    var cards = document.querySelectorAll(".question-card");
+    cards.forEach(function(c){c.classList.remove("active")});
+    event.target.closest(".question-card").classList.add("active");
+    
+    var nodes = [{id:"Q", label:item.question.substring(0,40), group:"question", full:item.question}];
+    var links = [];
+    var am = {};
+    var supTitles = item.supporting_facts.title;
+    var supIds = item.supporting_facts.sent_id;
+    var supSet = {};
+    for(var i=0; i<supTitles.length; i++){
+        supSet[supTitles[i]+"_"+supIds[i]] = true;
+    }
+    
+    item.context.title.forEach(function(title, i){
+        var aid = "A"+i;
+        if(!am[title]){
+            am[title] = aid;
+            nodes.push({id:aid, label:title.substring(0,30), group:"article", full:title});
+            links.push({source:"Q", target:aid});
+        } else {
+            aid = am[title];
+        }
+        var sents = item.context.sentences[i];
+        sents.forEach(function(sent, j){
+            var sid = aid+"_S"+j;
+            var isSup = supSet[title+"_"+j] ? true : false;
+            nodes.push({id:sid, label:sent.substring(0,35)+"...", group: isSup ? "supporting" : "sentence", full:sent});
+            links.push({source:aid, target:sid});
+            if(isSup){
+                links.push({source:"Q", target:sid});
+            }
+        });
+    });
+    
+    drawGraph(nodes, links, item.answer);
+}
+
+function drawGraph(nodes, links, answer){
+    document.getElementById("graph").innerHTML = "";
+    var el = document.getElementById("graph");
+    var W = el.clientWidth || 600;
+    var H = el.clientHeight || 420;
+    var colors = {question:"#4a90d9", article:"#e67e22", sentence:"#95a5a6", supporting:"#2ecc71"};
+    
+    var svg = d3.select("#graph").append("svg").attr("viewBox","0 0 "+W+" "+H);
+    var g = svg.append("g");
+    svg.call(d3.zoom().scaleExtent([0.3,3]).on("zoom", function(e){g.attr("transform", e.transform)}));
+    
+    nodes.forEach(function(n){
+        n.x = W/2 + (Math.random()-0.5)*W/3;
+        n.y = H/2 + (Math.random()-0.5)*H/3;
+    });
+    
+    var sim = d3.forceSimulation(nodes)
+        .force("link", d3.forceLink(links).id(function(d){return d.id}).distance(80))
+        .force("charge", d3.forceManyBody().strength(-300))
+        .force("center", d3.forceCenter(W/2, H/2));
+    
+    var link = g.selectAll("line").data(links).join("line").attr("class","link");
+    var node = g.selectAll("g").data(nodes).join("g").attr("class","node")
+        .call(d3.drag()
+            .on("start", function(e,d){if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y})
+            .on("drag", function(e,d){d.fx=e.x;d.fy=e.y})
+            .on("end", function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}));
+    
+    node.append("circle").attr("r", function(d){
+        return d.group==="question"?14:d.group==="article"?10:d.group==="supporting"?7:5;
+    }).attr("fill", function(d){return colors[d.group]});
+    
+    node.append("text").text(function(d){return d.label})
+        .attr("dy", function(d){return d.group==="question"?26:d.group==="article"?20:14})
+        .attr("text-anchor","middle").attr("fill","#555");
+    
+    var tooltip = d3.select("#tooltip");
+    node.on("mouseover", function(e,d){
+        tooltip.style("opacity",1).html("<b>"+d.group+"</b><br>"+(d.full||d.label).substring(0,150));
+    }).on("mousemove", function(e,d){
+        tooltip.style("left",(e.pageX+10)+"px").style("top",(e.pageY-10)+"px");
+    }).on("mouseout", function(){tooltip.style("opacity",0)});
+    
+    if(answer){
+        var al = svg.append("g");
+        al.append("rect").attr("x",W-200).attr("y",5).attr("width",190).attr("height",26)
+            .attr("rx",13).attr("fill","#e8f5e9").attr("stroke","#a5d6a7");
+        al.append("text").text("Answer: "+answer).attr("x",W-105).attr("y",23)
+            .attr("text-anchor","middle").attr("fill","#2e7d32").attr("font-size","13").attr("font-weight","600");
+    }
+    
+    sim.on("tick", function(){
+        link.attr("x1",function(d){return d.source.x}).attr("y1",function(d){return d.source.y})
+            .attr("x2",function(d){return d.target.x}).attr("y2",function(d){return d.target.y});
+        node.attr("transform",function(d){return "translate("+d.x+","+d.y+")"});
+    });
+}
+</script>
+</body>
+</html>
